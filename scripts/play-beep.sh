@@ -14,6 +14,7 @@ CONFIG=/etc/cryptsetup-beep/config
 ASK_DIR=/run/systemd/ask-password
 STATE_DIR=/run/cryptsetup-beep
 PIN_SEEN_FILE="$STATE_DIR/pin-seen"
+PASSPHRASE_SEEN_FILE="$STATE_DIR/passphrase-seen"
 
 # shellcheck disable=SC1090
 [ -r "$CONFIG" ] && . "$CONFIG"
@@ -45,6 +46,10 @@ classify_prompt() {
     message=${message#Message=}
 
     case "$message" in
+        # Explicit "try again" wording — kept as a defensive fallback for
+        # any systemd configuration that emits it. systemd-cryptsetup in
+        # the standard sd-encrypt path doesn't, hence the per-boot state
+        # marker below.
         *"Incorrect passphrase, try again"*|*"try again"*)
             printf 'retry\n'
             ;;
@@ -55,6 +60,18 @@ classify_prompt() {
             else
                 : > "$PIN_SEEN_FILE"
                 printf 'pin\n'
+            fi
+            ;;
+        # Passphrase / recovery key prompts. systemd-cryptsetup re-emits the
+        # same Message= on every retry, so we use a per-boot state marker
+        # in tmpfs to know whether this is the first ask of the boot.
+        *passphrase*|*"recovery key"*)
+            mkdir -p "$STATE_DIR" 2>/dev/null
+            if [ -e "$PASSPHRASE_SEEN_FILE" ]; then
+                printf 'retry\n'
+            else
+                : > "$PASSPHRASE_SEEN_FILE"
+                printf 'ready\n'
             fi
             ;;
         *)
