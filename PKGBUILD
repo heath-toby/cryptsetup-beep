@@ -15,7 +15,7 @@ optdepends=(
 )
 install=cryptsetup-beep.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('6ad76ebe283a1043ee388661296d14fec57f18d177fab55ff56c338d660bb554')
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
