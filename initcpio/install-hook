@@ -16,6 +16,9 @@ build() {
 
     add_file "$cfg" /etc/cryptsetup-beep/config
     add_file /usr/share/cryptsetup-beep/beep.wav
+    add_file /usr/share/cryptsetup-beep/beep-retry.wav
+    add_file /usr/share/cryptsetup-beep/beep-pin.wav
+    add_file /usr/share/cryptsetup-beep/beep-pin-retry.wav
     add_file /usr/lib/cryptsetup-beep/play-beep.sh
     add_file /usr/lib/systemd/system/cryptsetup-beep.path
     add_file /usr/lib/systemd/system/cryptsetup-beep.service

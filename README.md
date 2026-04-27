@@ -10,9 +10,11 @@ the system is ready for their input.
 
 ## Features
 
-- Beeps on the **initial passphrase prompt** and on **every retry** after a
-  failed attempt — both go through `systemd-cryptsetup`'s ask-password
-  mechanism, so the same trigger covers both.
+- **Distinct tones for distinct prompts.** A single 440Hz beep on the
+  initial passphrase prompt, two 440Hz beeps on a passphrase retry, a
+  single 880Hz beep (one octave up) on an initial token PIN prompt, and
+  two 880Hz beeps on a PIN retry — so the audio tells you both *what*
+  is being asked and *whether* you've already gotten it wrong once.
 - Works with **passphrase** unlocks and with **systemd-cryptenroll** tokens
   (FIDO2 / TPM2): the prompt for a PIN or "please tap your token" is
   delivered through the same ask-password path.
@@ -114,6 +116,15 @@ The wizard captures your hardware specifics — which ALSA card, which codec
 to match in `/proc/asound/`, which kernel modules to bake into the
 initramfs — and writes them to the config file. The mkinitcpio install hook
 reads the config at build time and includes only what's needed.
+
+For the *prompt-specific* tones, `play-beep.sh` reads the most recent
+`/run/systemd/ask-password/ask.*` file's `Message=` line and matches it
+against the strings systemd-cryptsetup uses (`Incorrect passphrase, try
+again!`, `Please enter security token PIN:`, etc.). Token-PIN retries
+reuse the same `Message=` as the initial PIN prompt, so the script keeps
+a one-byte state file at `/run/cryptsetup-beep/pin-seen` to know whether
+this is the first PIN ask of the boot or a follow-up. `/run` is tmpfs so
+that file is naturally wiped at every reboot.
 
 ## Authors and acknowledgements
 

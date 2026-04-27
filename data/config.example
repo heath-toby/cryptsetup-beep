@@ -27,11 +27,21 @@ MIXER_SPEAKER="100%,on"
 MIXER_HEADPHONE="70%,on"
 MIXER_PCM="100%"
 
-# Path to the WAV file to play. Override if you ship your own.
+# Path to the WAV file to play. cryptsetup-beep picks one of the four below
+# based on which prompt systemd-cryptsetup is showing — the initial
+# passphrase prompt, a passphrase retry, an initial token PIN prompt, or a
+# token PIN retry. Any path you leave undefined falls back to BEEP_WAV.
 BEEP_WAV=/usr/share/cryptsetup-beep/beep.wav
+BEEP_WAV_READY=/usr/share/cryptsetup-beep/beep.wav
+BEEP_WAV_RETRY=/usr/share/cryptsetup-beep/beep-retry.wav
+BEEP_WAV_PIN=/usr/share/cryptsetup-beep/beep-pin.wav
+BEEP_WAV_PIN_RETRY=/usr/share/cryptsetup-beep/beep-pin-retry.wav
 
 # PC speaker options ---------------------------------------------------------
 
-# Frequency in Hz and length in milliseconds, passed to beep(1).
+# Frequency in Hz and length in milliseconds, passed to beep(1). The PIN
+# tone uses PCSPKR_FREQ_PIN (one octave above PCSPKR_FREQ by default), and
+# retry prompts repeat the beep twice.
 PCSPKR_FREQ=440
+PCSPKR_FREQ_PIN=880
 PCSPKR_LEN=500
