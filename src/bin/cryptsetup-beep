@@ -1,0 +1,2 @@
+#!/bin/sh
+exec env PYTHONPATH=/usr/lib/cryptsetup-beep python3 -m cryptsetup_beep "$@"

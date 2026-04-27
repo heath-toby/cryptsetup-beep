@@ -1,0 +1,57 @@
+#!/bin/bash
+# mkinitcpio install hook for cryptsetup-beep.
+# Reads /etc/cryptsetup-beep/config at build time so it bakes only the kernel
+# modules and binaries the user's chosen METHOD actually needs.
+
+build() {
+    local cfg=/etc/cryptsetup-beep/config
+
+    if [ ! -r "$cfg" ]; then
+        warning "cryptsetup-beep: no /etc/cryptsetup-beep/config — run 'cryptsetup-beep --init'"
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    . "$cfg"
+
+    add_file "$cfg" /etc/cryptsetup-beep/config
+    add_file /usr/share/cryptsetup-beep/beep.wav
+    add_file /usr/lib/cryptsetup-beep/play-beep.sh
+    add_file /usr/lib/systemd/system/cryptsetup-beep.path
+    add_file /usr/lib/systemd/system/cryptsetup-beep.service
+
+    # Enable inside the initramfs only — never on the host.
+    add_symlink /etc/systemd/system/sysinit.target.wants/cryptsetup-beep.path \
+                /usr/lib/systemd/system/cryptsetup-beep.path
+
+    case "${METHOD:-}" in
+        pcspkr)
+            add_module pcspkr
+            add_binary /usr/bin/beep
+            ;;
+        alsa)
+            local m
+            for m in ${CODEC_MODULES:-}; do
+                add_module "$m"
+            done
+            add_binary /usr/bin/aplay
+            add_binary /usr/bin/amixer
+            add_full_dir /usr/share/alsa
+            ;;
+        *)
+            warning "cryptsetup-beep: METHOD '${METHOD:-}' is not 'alsa' or 'pcspkr'; nothing baked"
+            return 0
+            ;;
+    esac
+}
+
+help() {
+    cat <<HELPEOF
+This hook ships an audio cue for systemd-cryptsetup's LUKS passphrase prompt
+in the initramfs. It reads /etc/cryptsetup-beep/config and adds the matching
+kernel modules, userspace binaries, ALSA configuration, the WAV file, and the
+systemd .path/.service units that play it.
+
+Run 'cryptsetup-beep --init' to set up the configuration interactively.
+HELPEOF
+}

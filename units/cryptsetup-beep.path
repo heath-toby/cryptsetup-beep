@@ -1,0 +1,11 @@
+[Unit]
+Description=Beep on LUKS passphrase prompt
+DefaultDependencies=no
+Before=cryptsetup.target
+
+[Path]
+DirectoryNotEmpty=/run/systemd/ask-password
+MakeDirectory=yes
+
+[Install]
+WantedBy=sysinit.target

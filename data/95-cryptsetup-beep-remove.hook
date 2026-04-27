@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Remove
+Type = Package
+Target = cryptsetup-beep
+
+[Action]
+Description = Removing cryptsetup-beep from /etc/mkinitcpio.conf HOOKS
+When = PreTransaction
+Exec = /usr/share/libalpm/scripts/cryptsetup-beep-uninstall
+AbortOnFail = false

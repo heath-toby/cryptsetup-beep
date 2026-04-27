@@ -1,0 +1,10 @@
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.tar.gz
+__pycache__/
+**/__pycache__/
+*.pyc
+pkg/
+src-build/
+cryptsetup-beep-*/
+.DS_Store

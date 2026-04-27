@@ -1,0 +1,8 @@
+[Unit]
+Description=Play audible cue for LUKS passphrase prompt
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/cryptsetup-beep/play-beep.sh
+TimeoutStartSec=2min

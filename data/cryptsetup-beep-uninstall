@@ -1,0 +1,32 @@
+#!/bin/sh
+# Pre-removal cleanup script for the cryptsetup-beep package.
+# Invoked by /usr/share/libalpm/hooks/95-cryptsetup-beep-remove.hook with
+# When=PreTransaction, so the package's files are still on disk when we run.
+# We strip cryptsetup-beep from HOOKS= in /etc/mkinitcpio.conf and let
+# mkinitcpio's own post-transaction hook do the initramfs rebuild after the
+# package files have been removed.
+
+set -eu
+
+CONF=/etc/mkinitcpio.conf
+
+if [ ! -f "$CONF" ]; then
+    exit 0
+fi
+
+if ! grep -qE '^[[:space:]]*HOOKS=.*\bcryptsetup-beep\b' "$CONF"; then
+    exit 0
+fi
+
+backup="${CONF}.bak-cryptsetup-beep-remove-$(date +%s)"
+cp -p "$CONF" "$backup"
+
+# Strip cryptsetup-beep from HOOKS=. Handles either ordering with surrounding
+# whitespace so we never leave a doubled space behind.
+sed -i \
+    -e 's/[[:space:]]\{1,\}cryptsetup-beep\b//g' \
+    -e 's/\bcryptsetup-beep[[:space:]]\{1,\}//g' \
+    -e 's/\bcryptsetup-beep\b//g' \
+    "$CONF"
+
+echo "  -> removed cryptsetup-beep from $CONF (backup at $backup)"
