@@ -331,8 +331,10 @@ class Wizard:
         page = _page()
         page.pack_start(_heading("Review and apply"), False, False, 0)
         page.pack_start(_body(
-            "Review the configuration. Apply will save it, edit /etc/mkinitcpio.conf "
-            "if needed, and rebuild your initramfs. You'll be asked for your password."
+            "Review the configuration. Apply will save it, edit your initramfs "
+            "configuration if needed, and (on mkinitcpio) rebuild the initramfs. "
+            "On dracut you'll be prompted to rebuild afterwards. "
+            "You'll be asked for your password."
         ), False, False, 0)
 
         self.review_list = FocusManagedListBox()
@@ -409,10 +411,10 @@ class Wizard:
             text = hooks.diff_summary(status)
             self.hooks_status_label.set_text(text)
             set_atk(self.hooks_status_label, description=text)
-            self.apply_btn.set_sensitive(status.has_sd_encrypt)
-        except OSError as exc:
+            self.apply_btn.set_sensitive(hooks.can_apply(status))
+        except (OSError, RuntimeError) as exc:
             self.hooks_status_label.set_text(
-                f"Could not read /etc/mkinitcpio.conf: {exc}"
+                f"Could not read initramfs configuration: {exc}"
             )
             self.apply_btn.set_sensitive(False)
 

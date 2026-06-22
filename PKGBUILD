@@ -2,7 +2,7 @@
 # Co-author: Claude (Anthropic), via Claude Code
 
 pkgname=cryptsetup-beep
-pkgver=0.2.1
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Audible cue when systemd-cryptsetup prompts for a LUKS passphrase in initramfs'
 arch=('any')

@@ -45,6 +45,19 @@ classify_prompt() {
     message=$(grep -E '^Message=' "$ask" 2>/dev/null | head -1)
     message=${message#Message=}
 
+    # --- TEMPORARY DEBUG (remove after retry-beep is diagnosed) ---
+    # Captures every ask we see across the boot so we can tell whether the
+    # retry path is being taken or the state file isn't surviving.
+    mkdir -p /run/cryptsetup-beep 2>/dev/null
+    {
+        printf '[%s] ask=%s\n' "$(date '+%H:%M:%S.%N')" "$ask"
+        printf '  message=%q\n' "$message"
+        printf '  passphrase_seen=%s pin_seen=%s\n' \
+            "$( [ -e "$PASSPHRASE_SEEN_FILE" ] && echo yes || echo no )" \
+            "$( [ -e "$PIN_SEEN_FILE" ] && echo yes || echo no )"
+    } >> /run/cryptsetup-beep/debug.log 2>/dev/null
+    # --- END TEMPORARY DEBUG ---
+
     case "$message" in
         # Explicit "try again" wording — kept as a defensive fallback for
         # any systemd configuration that emits it. systemd-cryptsetup in
@@ -101,6 +114,7 @@ case "${METHOD:-pcspkr}" in
     pcspkr)
         modprobe pcspkr 2>/dev/null
         prompt_kind=$(classify_prompt)
+        printf '  kind=%s\n' "$prompt_kind" >> /run/cryptsetup-beep/debug.log 2>/dev/null
         # Frequency: ready/retry use the base tone, pin/pin-retry an octave up.
         case "$prompt_kind" in
             pin|pin-retry) freq=${PCSPKR_FREQ_PIN:-880} ;;
@@ -157,6 +171,7 @@ case "${METHOD:-pcspkr}" in
         [ -n "${MIXER_PCM:-}" ]       && amixer_sset "$card" PCM       "$MIXER_PCM"
 
         prompt_kind=$(classify_prompt)
+        printf '  kind=%s\n' "$prompt_kind" >> /run/cryptsetup-beep/debug.log 2>/dev/null
         default_wav=${BEEP_WAV:-/usr/share/cryptsetup-beep/beep.wav}
         case "$prompt_kind" in
             retry)     wav=${BEEP_WAV_RETRY:-/usr/share/cryptsetup-beep/beep-retry.wav} ;;

@@ -75,14 +75,31 @@ def cmd_test() -> int:
 
 
 def cmd_regen() -> int:
-    if os.geteuid() != 0:
-        return _reexec_under_pkexec(["--regen"])
-    return _run_mkinitcpio()
+    backend = hooks.detect_backend()
+    if backend == "mkinitcpio":
+        if os.geteuid() != 0:
+            return _reexec_under_pkexec(["--regen"])
+        return _run_mkinitcpio()
+    if backend == "dracut":
+        # We deliberately don't run dracut directly — the right rebuild
+        # command depends on the user's kernel package (gentoo-kernel-bin,
+        # gentoo-sources via genkernel, etc.).
+        print(
+            "On a dracut system, --regen does not rebuild the initramfs because "
+            "the correct command depends on your kernel package.\n"
+            "\n"
+            "On Gentoo: sudo emerge --config sys-kernel/gentoo-kernel-bin\n"
+            "Elsewhere: sudo dracut --regenerate-all --force"
+        )
+        return 0
+    print("No supported initramfs system found.", file=sys.stderr)
+    return 1
 
 
 def cmd_write_config(staging: Path) -> int:
-    """Privileged path: validate the staging file, install it, edit
-    /etc/mkinitcpio.conf if necessary, run mkinitcpio."""
+    """Privileged path: validate the staging file, install it, edit the
+    initramfs config if necessary, and either rebuild (mkinitcpio) or
+    print a reminder (dracut)."""
     if os.geteuid() != 0:
         print("--write-config must be run as root (use pkexec)", file=sys.stderr)
         return 2
@@ -110,18 +127,37 @@ def cmd_write_config(staging: Path) -> int:
     shutil.copy(staging, CONFIG_PATH)
     os.chmod(CONFIG_PATH, 0o644)
 
+    backend = hooks.detect_backend()
     status = hooks.inspect()
-    if not status.has_sd_encrypt:
-        print(
-            "warning: sd-encrypt is not in HOOKS in /etc/mkinitcpio.conf; "
-            "the beep won't run unless you add it.",
-            file=sys.stderr,
-        )
-    elif not status.has_hook:
-        backup = hooks.apply(status)
-        print(f"edited /etc/mkinitcpio.conf (backup at {backup})")
 
-    return _run_mkinitcpio()
+    if backend == "mkinitcpio":
+        if not status.has_sd_encrypt:
+            print(
+                "warning: sd-encrypt is not in HOOKS in /etc/mkinitcpio.conf; "
+                "the beep won't run unless you add it.",
+                file=sys.stderr,
+            )
+        elif not status.has_hook:
+            backup = hooks.apply(status)
+            if backup:
+                print(f"edited /etc/mkinitcpio.conf (backup at {backup})")
+        return _run_mkinitcpio()
+
+    if backend == "dracut":
+        if not status.has_conf:
+            backup = hooks.apply(status)
+            if backup:
+                print(
+                    f"replaced /etc/dracut.conf.d/cryptsetup-beep.conf "
+                    f"(backup at {backup})"
+                )
+            else:
+                print("wrote /etc/dracut.conf.d/cryptsetup-beep.conf")
+        print(hooks.post_apply_message())
+        return 0
+
+    print("No supported initramfs system found.", file=sys.stderr)
+    return 1
 
 
 def _run_mkinitcpio() -> int:
