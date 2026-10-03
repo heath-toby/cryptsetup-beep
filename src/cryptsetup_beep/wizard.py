@@ -25,7 +25,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Atk, GLib, Gtk  # type: ignore[import-not-found]  # noqa: E402
 
 from cryptsetup_beep import audio, hooks, pcspkr
-from cryptsetup_beep.config import BeepConfig
+from cryptsetup_beep.config import BeepConfig, DeviceEntry
 from cryptsetup_beep.widgets import (
     FocusManagedListBox,
     PreviewExitListBox,
@@ -114,6 +114,7 @@ class Wizard:
     PAGE_WELCOME = "welcome"
     PAGE_HEARD = "heard"
     PAGE_ALSA = "alsa"
+    PAGE_MULTI = "multi"
     PAGE_REVIEW = "review"
     PAGE_DONE = "done"
 
@@ -135,6 +136,7 @@ class Wizard:
         self.stack.add_named(self._build_welcome(), self.PAGE_WELCOME)
         self.stack.add_named(self._build_heard(), self.PAGE_HEARD)
         self.stack.add_named(self._build_alsa(), self.PAGE_ALSA)
+        self.stack.add_named(self._build_multi(), self.PAGE_MULTI)
         self.stack.add_named(self._build_review(), self.PAGE_REVIEW)
         self.stack.add_named(self._build_done(), self.PAGE_DONE)
 
@@ -256,6 +258,16 @@ class Wizard:
 
         page.pack_start(buttons, False, False, 0)
 
+        # Advanced path: multiple fallback devices.
+        advanced = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.multi_entry_btn = _button(
+            "Set up _multiple fallback devices (advanced)",
+            atk_name="Set up multiple fallback devices (advanced)",
+        )
+        self.multi_entry_btn.connect("clicked", lambda *_: self._goto(self.PAGE_MULTI))
+        advanced.pack_start(self.multi_entry_btn, False, False, 0)
+        page.pack_start(advanced, False, False, 0)
+
         self.alsa_list.set_exit_forward(self.preview_btn)
         return page
 
@@ -325,6 +337,317 @@ class Wizard:
         self._back_target = self.PAGE_ALSA
         self._goto(self.PAGE_REVIEW)
 
+    # ---- Page 3b: Multiple fallback devices (advanced) --------------------
+
+    def _build_multi(self) -> Gtk.Widget:
+        page = _page()
+        page.pack_start(_heading("Multiple fallback devices"), False, False, 0)
+        page.pack_start(_body(
+            "Pick one or more audio devices for the boot beep. At boot the "
+            "player tries each in order and plays through the first one that "
+            "is present and working — so, for example, dock headphones first, "
+            "then the internal headphone jack, then internal speakers. "
+            "If none of them is available, the boot continues silently."
+        ), False, False, 0)
+
+        # --- Candidates (devices available on this machine) ---------------
+        page.pack_start(_body("Available devices (choose one, then Add):"),
+                        False, False, 0)
+        cand_scrolled = Gtk.ScrolledWindow()
+        cand_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        cand_scrolled.set_min_content_height(120)
+        cand_scrolled.set_vexpand(True)
+
+        self.multi_cand_list = FocusManagedListBox()
+        self.multi_cand_radios: list[Gtk.RadioButton] = []
+        self.multi_cand_devices: list[audio.DeviceInfo] = []
+        self._populate_multi_candidates()
+        cand_scrolled.add(self.multi_cand_list)
+        page.pack_start(cand_scrolled, True, True, 0)
+
+        add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.multi_add_btn = _button("_Add selected to fallback list",
+                                     atk_name="Add selected device to fallback list")
+        self.multi_add_btn.connect("clicked", self._on_multi_add)
+        add_row.pack_start(self.multi_add_btn, False, False, 0)
+        page.pack_start(add_row, False, False, 0)
+
+        # --- Chosen devices in priority order -----------------------------
+        page.pack_start(_body("Current fallback list (tried in order):"),
+                        False, False, 0)
+        chosen_scrolled = Gtk.ScrolledWindow()
+        chosen_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        chosen_scrolled.set_min_content_height(120)
+        chosen_scrolled.set_vexpand(True)
+
+        self.multi_chosen_list = FocusManagedListBox()
+        self.multi_chosen_radios: list[Gtk.RadioButton] = []
+        self.multi_chosen_entries: list[DeviceEntry] = list(self.config.devices)
+        self._populate_multi_chosen()
+        chosen_scrolled.add(self.multi_chosen_list)
+        page.pack_start(chosen_scrolled, True, True, 0)
+
+        self.multi_status = Gtk.Label()
+        self.multi_status.set_xalign(0)
+        self.multi_status.set_line_wrap(True)
+        page.pack_start(self.multi_status, False, False, 0)
+
+        row_ops = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.multi_up_btn = _button("Move _up", atk_name="Move selected device up")
+        self.multi_up_btn.connect("clicked", self._on_multi_up)
+        row_ops.pack_start(self.multi_up_btn, False, False, 0)
+        self.multi_down_btn = _button("Move _down", atk_name="Move selected device down")
+        self.multi_down_btn.connect("clicked", self._on_multi_down)
+        row_ops.pack_start(self.multi_down_btn, False, False, 0)
+        self.multi_remove_btn = _button("_Remove", atk_name="Remove selected device")
+        self.multi_remove_btn.connect("clicked", self._on_multi_remove)
+        row_ops.pack_start(self.multi_remove_btn, False, False, 0)
+        self.multi_test_btn = _button("_Test", atk_name="Test selected device")
+        self.multi_test_btn.connect("clicked", self._on_multi_test)
+        row_ops.pack_start(self.multi_test_btn, False, False, 0)
+        page.pack_start(row_ops, False, False, 0)
+
+        row_main = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.multi_ok_btn = _button("_OK (save fallback list)",
+                                    atk_name="OK, save fallback list")
+        self.multi_ok_btn.connect("clicked", self._on_multi_ok)
+        row_main.pack_start(self.multi_ok_btn, False, False, 0)
+        self.multi_back_btn = _button("_Back", atk_name="Back to single-device page")
+        self.multi_back_btn.connect("clicked", lambda *_: self._goto(self.PAGE_ALSA))
+        row_main.pack_start(self.multi_back_btn, False, False, 0)
+        self.multi_cancel_btn = _button("_Cancel", atk_name="Cancel and quit")
+        self.multi_cancel_btn.connect("clicked", lambda *_: self.window.close())
+        row_main.pack_start(self.multi_cancel_btn, False, False, 0)
+        page.pack_start(row_main, False, False, 0)
+        return page
+
+    def _populate_multi_candidates(self) -> None:
+        devices = audio.discover_all_output_devices()
+        self.multi_cand_devices = devices
+        self.multi_cand_radios = []
+        for child in self.multi_cand_list.get_children():
+            self.multi_cand_list.remove(child)
+        self.multi_cand_list._widgets.clear()
+        self.multi_cand_list._rows.clear()
+
+        if not devices:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.add(Gtk.Label(label="No output devices found in /proc/asound."))
+            self.multi_cand_list.add(row)
+            return
+
+        first: Gtk.RadioButton | None = None
+        for dev in devices:
+            label = self._candidate_label(dev)
+            radio = Gtk.RadioButton.new_with_label_from_widget(first, label)
+            if first is None:
+                first = radio
+                radio.set_active(True)
+            radio.set_margin_top(4)
+            radio.set_margin_bottom(4)
+            radio.set_margin_start(12)
+            radio.set_margin_end(12)
+            atk_desc = (
+                f"{label}. Suggested match {dev.suggested_match() or 'none'}. "
+                f"PCM {dev.pcm_devices[0] if dev.pcm_devices else '?'}."
+            )
+            set_atk(radio, role=Atk.Role.RADIO_BUTTON,
+                    name=label, description=atk_desc)
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            row.add(radio)
+            self.multi_cand_list.add_row_with_widget(row, radio)
+            self.multi_cand_radios.append(radio)
+        self.multi_cand_list.show_all()
+
+    def _populate_multi_chosen(self) -> None:
+        self.multi_chosen_radios = []
+        for child in self.multi_chosen_list.get_children():
+            self.multi_chosen_list.remove(child)
+        self.multi_chosen_list._widgets.clear()
+        self.multi_chosen_list._rows.clear()
+
+        if not self.multi_chosen_entries:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.add(Gtk.Label(label="(no devices added yet)"))
+            self.multi_chosen_list.add(row)
+            self.multi_chosen_list.show_all()
+            return
+
+        first: Gtk.RadioButton | None = None
+        for i, entry in enumerate(self.multi_chosen_entries, start=1):
+            label = f"{i}. {entry.name} ({entry.match}, PCM {entry.pcm})"
+            radio = Gtk.RadioButton.new_with_label_from_widget(first, label)
+            if first is None:
+                first = radio
+                radio.set_active(True)
+            radio.set_margin_top(4)
+            radio.set_margin_bottom(4)
+            radio.set_margin_start(12)
+            radio.set_margin_end(12)
+            set_atk(radio, role=Atk.Role.RADIO_BUTTON,
+                    name=label, description=label)
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            row.add(radio)
+            self.multi_chosen_list.add_row_with_widget(row, radio)
+            self.multi_chosen_radios.append(radio)
+        self.multi_chosen_list.show_all()
+
+    @staticmethod
+    def _candidate_label(dev: audio.DeviceInfo) -> str:
+        parts = [dev.card_name]
+        if dev.codec_name:
+            parts.append(f"codec {dev.codec_name}")
+        if dev.usb_vendor_product:
+            parts.append(f"USB {dev.usb_vendor_product}")
+        return " — ".join(parts)
+
+    def _selected_candidate(self) -> audio.DeviceInfo | None:
+        for radio, dev in zip(self.multi_cand_radios, self.multi_cand_devices):
+            if radio.get_active():
+                return dev
+        return None
+
+    def _selected_chosen_index(self) -> int | None:
+        for i, radio in enumerate(self.multi_chosen_radios):
+            if radio.get_active():
+                return i
+        return None
+
+    def _on_multi_add(self, _btn: Gtk.Button) -> None:
+        dev = self._selected_candidate()
+        if dev is None:
+            self._set_status(self.multi_status, "No candidate selected.")
+            return
+        match = dev.suggested_match()
+        if not match:
+            self._set_status(
+                self.multi_status,
+                f"Can't suggest a MATCH for {dev.card_name} — no codec or USB id.",
+            )
+            return
+        pcm = dev.pcm_devices[0] if dev.pcm_devices else 0
+        name = dev.card_name
+        if dev.codec_name:
+            name = dev.codec_name
+        elif dev.usb_vendor_product:
+            name = dev.card_id or dev.card_name
+        entry = DeviceEntry(name=name, match=match, pcm=pcm, mixer="")
+        self.multi_chosen_entries.append(entry)
+        self._populate_multi_chosen()
+        self._set_status(self.multi_status, f"Added {entry.name} ({entry.match}).")
+
+    def _on_multi_up(self, _btn: Gtk.Button) -> None:
+        idx = self._selected_chosen_index()
+        if idx is None or idx == 0:
+            return
+        entries = self.multi_chosen_entries
+        entries[idx - 1], entries[idx] = entries[idx], entries[idx - 1]
+        self._populate_multi_chosen()
+        # Re-select the moved entry (now at idx-1).
+        if 0 <= idx - 1 < len(self.multi_chosen_radios):
+            self.multi_chosen_radios[idx - 1].set_active(True)
+
+    def _on_multi_down(self, _btn: Gtk.Button) -> None:
+        idx = self._selected_chosen_index()
+        if idx is None or idx >= len(self.multi_chosen_entries) - 1:
+            return
+        entries = self.multi_chosen_entries
+        entries[idx + 1], entries[idx] = entries[idx], entries[idx + 1]
+        self._populate_multi_chosen()
+        if 0 <= idx + 1 < len(self.multi_chosen_radios):
+            self.multi_chosen_radios[idx + 1].set_active(True)
+
+    def _on_multi_remove(self, _btn: Gtk.Button) -> None:
+        idx = self._selected_chosen_index()
+        if idx is None:
+            return
+        removed = self.multi_chosen_entries.pop(idx)
+        self._populate_multi_chosen()
+        self._set_status(self.multi_status, f"Removed {removed.name}.")
+
+    def _on_multi_test(self, _btn: Gtk.Button) -> None:
+        idx = self._selected_chosen_index()
+        if idx is None:
+            self._set_status(self.multi_status, "No chosen device selected.")
+            return
+        entry = self.multi_chosen_entries[idx]
+        dev = self._resolve_entry_to_alsa_device(entry)
+        if dev is None:
+            self._set_status(
+                self.multi_status,
+                f"Could not resolve {entry.match} to a card right now.",
+            )
+            return
+        try:
+            audio.preview_beep(dev, WAV_PATH, self.config)
+            self._set_status(self.multi_status, f"Played beep through {entry.name}.")
+        except subprocess.CalledProcessError as exc:
+            self._set_status(
+                self.multi_status,
+                f"Playback failed on {entry.name} (aplay exit {exc.returncode}).",
+            )
+        except FileNotFoundError:
+            self._set_status(self.multi_status, "aplay or amixer isn't installed.")
+
+    @staticmethod
+    def _resolve_entry_to_alsa_device(entry: DeviceEntry) -> audio.AlsaDevice | None:
+        """Find the live card index matching entry.match and build an
+        AlsaDevice suitable for audio.preview_beep()."""
+        kind, _, spec = entry.match.partition(":")
+        for info in audio.discover_all_output_devices():
+            if kind == "codec" and info.codec_name:
+                if spec.lower() in info.codec_name.lower():
+                    return audio.AlsaDevice(
+                        pcm_spec=f"plughw:{info.card_index},{entry.pcm}",
+                        card_index=info.card_index,
+                        pcm_device=entry.pcm,
+                        description=f"{info.card_name} (codec {info.codec_name})",
+                        codec_string=info.codec_name,
+                    )
+            if kind == "usb" and info.usb_vendor_product:
+                if spec.lower() == info.usb_vendor_product.lower():
+                    return audio.AlsaDevice(
+                        pcm_spec=f"plughw:{info.card_index},{entry.pcm}",
+                        card_index=info.card_index,
+                        pcm_device=entry.pcm,
+                        description=f"{info.card_name} (USB {info.usb_vendor_product})",
+                    )
+        return None
+
+    def _on_multi_ok(self, _btn: Gtk.Button) -> None:
+        if not self.multi_chosen_entries:
+            self._set_status(self.multi_status, "Add at least one device first.")
+            return
+        # Collect modules for every chosen device so the dracut/initcpio
+        # hook knows what to bake in (snd_hda_intel for HDA, snd_usb_audio
+        # for USB — the hooks also auto-add snd_usb_audio when they see a
+        # usb: match, but populating CODEC_MODULES too is belt-and-braces).
+        modules: list[str] = []
+        seen: set[str] = set()
+        for entry in self.multi_chosen_entries:
+            dev = self._resolve_entry_to_alsa_device(entry)
+            if dev is None:
+                continue
+            for m in audio.modules_for_card(dev.card_index):
+                if m not in seen:
+                    seen.add(m)
+                    modules.append(m)
+
+        self.config = replace(
+            self.config,
+            method="alsa",
+            devices=list(self.multi_chosen_entries),
+            codec_modules=" ".join(modules) or self.config.codec_modules,
+        )
+        if not self.config.probe_timeout:
+            self.config = replace(self.config, probe_timeout=5)
+        self._back_target = self.PAGE_MULTI
+        self._goto(self.PAGE_REVIEW)
+
     # ---- Page 4: Review ---------------------------------------------------
 
     def _build_review(self) -> Gtk.Widget:
@@ -373,21 +696,33 @@ class Wizard:
         self.review_list._widgets.clear()
         self.review_list._rows.clear()
 
-        rows = [
-            ("Method", self.config.method),
-            ("Codec match", self.config.codec_match or "(none)"),
-            ("Codec modules", self.config.codec_modules or "(none)"),
-            ("PCM device", str(self.config.pcm_device)),
-            ("Master volume", self.config.mixer_master),
-            ("Speaker volume", self.config.mixer_speaker),
-            ("Headphone volume", self.config.mixer_headphone),
-            ("PCM volume", self.config.mixer_pcm),
-        ]
-        if self.config.method == "pcspkr":
-            rows = [r for r in rows if r[0] in ("Method",)] + [
-                ("Frequency (Hz)", str(self.config.pcspkr_freq)),
-                ("Length (ms)", str(self.config.pcspkr_len)),
+        if self.config.devices:
+            rows = [
+                ("Method", self.config.method),
+                ("Codec modules", self.config.codec_modules or "(none)"),
+                ("Probe timeout (s)", str(self.config.probe_timeout)),
+                ("Fallback devices", f"{len(self.config.devices)} configured"),
             ]
+            for i, entry in enumerate(self.config.devices, start=1):
+                rows.append(
+                    (f"Device {i}", f"{entry.name} ({entry.match}, PCM {entry.pcm})")
+                )
+        else:
+            rows = [
+                ("Method", self.config.method),
+                ("Codec match", self.config.codec_match or "(none)"),
+                ("Codec modules", self.config.codec_modules or "(none)"),
+                ("PCM device", str(self.config.pcm_device)),
+                ("Master volume", self.config.mixer_master),
+                ("Speaker volume", self.config.mixer_speaker),
+                ("Headphone volume", self.config.mixer_headphone),
+                ("PCM volume", self.config.mixer_pcm),
+            ]
+            if self.config.method == "pcspkr":
+                rows = [r for r in rows if r[0] in ("Method",)] + [
+                    ("Frequency (Hz)", str(self.config.pcspkr_freq)),
+                    ("Length (ms)", str(self.config.pcspkr_len)),
+                ]
 
         for label_text, value in rows:
             row = Gtk.ListBoxRow()
@@ -498,6 +833,7 @@ class Wizard:
             self.PAGE_WELCOME: lambda: self.test_btn,
             self.PAGE_HEARD:   lambda: self.yes_btn,
             self.PAGE_ALSA:    lambda: (self.alsa_radios[0] if self.alsa_radios else self.preview_btn),
+            self.PAGE_MULTI:   lambda: (self.multi_cand_radios[0] if self.multi_cand_radios else self.multi_add_btn),
             self.PAGE_REVIEW:  lambda: self.apply_btn,
             self.PAGE_DONE:    lambda: self.done_btn,
         }.get(page_name)
