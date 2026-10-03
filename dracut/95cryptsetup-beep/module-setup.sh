@@ -61,6 +61,15 @@ install() {
             for m in ${CODEC_MODULES:-}; do
                 instmods "$m"
             done
+            # Multi-device mode: if any DEVICE_*_MATCH uses the usb: kind,
+            # make sure snd_usb_audio is loaded in the initramfs. The user
+            # doesn't have to remember to add it to CODEC_MODULES by hand.
+            if grep -qE '^DEVICE_[0-9]+_MATCH=.*usb:' "$cfg" 2>/dev/null; then
+                case " ${CODEC_MODULES:-} " in
+                    *" snd_usb_audio "*) ;;
+                    *) instmods snd_usb_audio ;;
+                esac
+            fi
             inst_binary /usr/bin/aplay
             inst_binary /usr/bin/amixer
             # ALSA runtime data (codec quirks, conf snippets). dracut has no
