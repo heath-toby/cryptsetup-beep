@@ -12,10 +12,10 @@ from pathlib import Path
 
 from cryptsetup_beep import audio, hooks
 from cryptsetup_beep.config import (
-    ALLOWED_KEYS,
     BeepConfig,
     CONFIG_PATH,
     _parse_shell_kv,
+    is_allowed_key,
     validate,
 )
 
@@ -114,9 +114,9 @@ def cmd_write_config(staging: Path) -> int:
         return 2
 
     parsed = _parse_shell_kv(text)
-    extra = set(parsed) - ALLOWED_KEYS
+    extra = sorted(k for k in parsed if not is_allowed_key(k))
     if extra:
-        print(f"refused: unknown keys in staging file: {sorted(extra)}", file=sys.stderr)
+        print(f"refused: unknown keys in staging file: {extra}", file=sys.stderr)
         return 2
     errors = validate(parsed)
     if errors:

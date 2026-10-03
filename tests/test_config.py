@@ -84,10 +84,14 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("unsafe" in e for e in errors))
 
     def test_known_keys_only(self) -> None:
-        # Sanity: all dataclass fields must appear in ALLOWED_KEYS as their
-        # SHELL_CASE equivalents, otherwise the privileged write path would
-        # reject configs the wizard itself produces.
+        # Sanity: all scalar dataclass fields must appear in ALLOWED_KEYS as
+        # their SHELL_CASE equivalents, otherwise the privileged write path
+        # would reject configs the wizard itself produces. The `devices`
+        # field is serialised as DEVICE_N_* keys and validated by pattern,
+        # not by ALLOWED_KEYS membership.
         for field_name in BeepConfig().__dict__:
+            if field_name == "devices":
+                continue
             self.assertIn(field_name.upper(), ALLOWED_KEYS,
                           f"{field_name.upper()} missing from ALLOWED_KEYS")
 
