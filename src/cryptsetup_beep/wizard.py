@@ -67,6 +67,35 @@ def _resume_events() -> bool:
     return False
 
 
+def _device_in_use_by_pipewire(card_index: int) -> bool:
+    """Best-effort: is the ALSA card currently held by PipeWire (or PulseAudio)?
+
+    Live-system device tests fail with aplay -EBUSY when the daemon has the
+    card open exclusively. We detect it via `pactl list sinks short` matching
+    an alsa_output sink name that mentions the card id. If pactl isn't
+    installed, return False and let the caller fall back to the generic error."""
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "sinks", "short"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    if out.returncode != 0:
+        return False
+    # Resolve card index to card id (sinks name their card by id, not index).
+    try:
+        card_id = Path(f"/proc/asound/card{card_index}/id").read_text().strip()
+    except OSError:
+        return False
+    for line in out.stdout.splitlines():
+        # Lines look like:
+        #  <id> alsa_output.usb-CalDigit...-Rear-00.analog-stereo PipeWire ... RUNNING
+        if "alsa_output" in line and card_id in line and "RUNNING" in line:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Page builders
 # ---------------------------------------------------------------------------
@@ -370,6 +399,32 @@ class Wizard:
         cand_scrolled.add(self.multi_cand_list)
         page.pack_start(cand_scrolled, True, True, 0)
 
+        # Volume row — slider sets the level that will be applied to the
+        # device's common controls (Master/PCM/Headphone/Speaker) at boot
+        # time. "Capture current" reads the device's current level from
+        # ALSA so you can level-match live and freeze that in. Default 70
+        # is a middle-of-the-road starting point; different devices need
+        # different levels (dock headphones vs internal speakers can be
+        # 30 dB apart at the same nominal percent).
+        vol_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        vol_row.pack_start(Gtk.Label(label="Volume:"), False, False, 0)
+        self.multi_vol_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 0, 100, 1,
+        )
+        self.multi_vol_scale.set_value(70)
+        self.multi_vol_scale.set_hexpand(True)
+        self.multi_vol_scale.set_digits(0)
+        self.multi_vol_scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.multi_vol_scale.get_accessible().set_name("Device volume percent")
+        vol_row.pack_start(self.multi_vol_scale, True, True, 0)
+        self.multi_vol_capture_btn = _button(
+            "_Capture current",
+            atk_name="Capture volume currently set on the selected device",
+        )
+        self.multi_vol_capture_btn.connect("clicked", self._on_multi_vol_capture)
+        vol_row.pack_start(self.multi_vol_capture_btn, False, False, 0)
+        page.pack_start(vol_row, False, False, 0)
+
         add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.multi_add_btn = _button("_Add selected (takes top priority)",
                                      atk_name="Add selected device as top priority")
@@ -483,7 +538,8 @@ class Wizard:
 
         first: Gtk.RadioButton | None = None
         for i, entry in enumerate(self.multi_chosen_entries, start=1):
-            label = f"{i}. {entry.name} ({entry.match}, PCM {entry.pcm})"
+            vol_part = f", volume {entry.volume}%" if entry.volume >= 0 else ""
+            label = f"{i}. {entry.name} ({entry.match}, PCM {entry.pcm}{vol_part})"
             radio = Gtk.RadioButton.new_with_label_from_widget(first, label)
             if first is None:
                 first = radio
@@ -540,7 +596,10 @@ class Wizard:
             name = dev.codec_name
         elif dev.usb_vendor_product:
             name = dev.card_id or dev.card_name
-        entry = DeviceEntry(name=name, match=match, pcm=pcm, mixer="")
+        volume = int(self.multi_vol_scale.get_value())
+        entry = DeviceEntry(
+            name=name, match=match, pcm=pcm, mixer="", volume=volume,
+        )
         # Insert at position 0 so each new add becomes the new top priority
         # (DEVICE_1). Previously-added devices shift down the list to make
         # room, which matches the "add fallback first, add preferred device
@@ -549,7 +608,33 @@ class Wizard:
         self._populate_multi_chosen()
         self._set_status(
             self.multi_status,
-            f"Added {entry.name} ({entry.match}) at top of priority list.",
+            f"Added {entry.name} ({entry.match}, volume {volume}%) "
+            f"at top of priority list.",
+        )
+
+    def _on_multi_vol_capture(self, _btn: Gtk.Button) -> None:
+        """Read the selected candidate's current ALSA volume into the slider.
+        Lets the user adjust volume live (via their normal tools), hear it,
+        then freeze that level into the config with one click."""
+        dev = self._selected_candidate()
+        if dev is None:
+            self._set_status(
+                self.multi_status,
+                "No candidate selected — select a device first, then Capture current.",
+            )
+            return
+        vol = audio.get_current_volume(dev.card_index)
+        if vol is None:
+            self._set_status(
+                self.multi_status,
+                f"Could not read current volume on {dev.card_name} "
+                f"(no Master/PCM/Headphone/Speaker control responded).",
+            )
+            return
+        self.multi_vol_scale.set_value(vol)
+        self._set_status(
+            self.multi_status,
+            f"Captured {vol}% from {dev.card_name}.",
         )
 
     def _on_multi_up(self, _btn: Gtk.Button) -> None:
@@ -595,12 +680,31 @@ class Wizard:
             )
             return
         try:
+            # Apply the device's own volume BEFORE calling preview_beep so
+            # the test reproduces exactly what the boot runtime will do
+            # (preview_beep itself applies the single-device mixer values,
+            # which is fine as a baseline — our per-device volume lands on
+            # top via the common controls).
+            if entry.volume >= 0:
+                audio.apply_volume_to_card(dev.card_index, entry.volume)
             audio.preview_beep(dev, WAV_PATH, self.config)
             self._set_status(self.multi_status, f"Played beep through {entry.name}.")
         except subprocess.CalledProcessError as exc:
+            # aplay fails most commonly with -EBUSY when PipeWire is holding
+            # the device exclusively. That's a live-system issue only — in
+            # initramfs there's no PipeWire, so the device will still work
+            # at boot. Give a helpful hint so the user doesn't think the
+            # device is broken.
+            hint = ""
+            if _device_in_use_by_pipewire(dev.card_index):
+                hint = (
+                    " PipeWire is currently using this device — the test "
+                    "can't open it exclusively. This usually works at boot "
+                    "though, when PipeWire isn't running yet."
+                )
             self._set_status(
                 self.multi_status,
-                f"Playback failed on {entry.name} (aplay exit {exc.returncode}).",
+                f"Playback failed on {entry.name} (aplay exit {exc.returncode}).{hint}",
             )
         except FileNotFoundError:
             self._set_status(self.multi_status, "aplay or amixer isn't installed.")

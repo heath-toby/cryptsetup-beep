@@ -197,6 +197,46 @@ def _is_loadable_module(name: str) -> bool:
     return result.stdout.strip() != "(builtin)"
 
 
+def get_current_volume(card_index: int) -> int | None:
+    """Read the current playback percentage from the first common output control
+    that responds on the given card. Returns an int 0-100, or None if no
+    control responded (very unusual — most cards expose at least one of these).
+
+    Used by the wizard's "Capture current" button so the user can level-match a
+    device's boot-time volume to what they're hearing live before saving.
+    """
+    for control in ("Master", "PCM", "Headphone", "Speaker"):
+        try:
+            out = subprocess.run(
+                ["amixer", "-c", str(card_index), "get", control],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+        if out.returncode != 0:
+            continue
+        match = re.search(r"\[(\d+)%\]", out.stdout)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def apply_volume_to_card(card_index: int, volume: int) -> None:
+    """Set the given 0-100 volume on every common output control that exists
+    on the card. amixer silently no-ops on missing controls, so this is a
+    broad-brush equivalent of DEVICE_N_VOLUME in play-beep.sh — same semantics
+    so wizard tests behave exactly as the boot runtime will.
+    """
+    if volume < 0 or volume > 100:
+        return
+    card = str(card_index)
+    for control in ("Master", "PCM", "Headphone", "Speaker"):
+        subprocess.run(
+            ["amixer", "-c", card, "-q", "sset", control, f"{volume}%", "unmute"],
+            stderr=subprocess.DEVNULL, check=False,
+        )
+
+
 def preview_beep(device: AlsaDevice, wav_path: Path, config: BeepConfig) -> None:
     """Play the beep for the wizard's Preview button.
 
