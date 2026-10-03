@@ -123,6 +123,23 @@ apply_device_mixer() {
     amixer_sset "$_card" "$_control" "$_value"
 }
 
+# Apply a DEVICE_N_VOLUME value (0-100) to the card's common output controls.
+# Tries Master, PCM, Headphone, Speaker — amixer_sset silently no-ops on
+# controls that don't exist, so this picks up whichever the card has.
+# Called BEFORE apply_device_mixer so a user-specified MIXER string can
+# still override the broad-brush volume.
+apply_device_volume() {
+    # $1 card index, $2 volume 0-100 (empty / <0 = skip)
+    _card=$1
+    _vol=$2
+    [ -z "$_vol" ] && return 0
+    # POSIX integer comparison; -1 (unset sentinel) and anything non-numeric fail.
+    [ "$_vol" -ge 0 ] 2>/dev/null || return 0
+    for _ctrl in Master PCM Headphone Speaker; do
+        amixer_sset "$_card" "$_ctrl" "${_vol}%,unmute"
+    done
+}
+
 # Resolve a MATCH string ("codec:X" or "usb:VVVV:PPPP") to a card index.
 # Prints the index on stdout and returns 0, or returns 1 if no card matches.
 resolve_match_to_card() {
@@ -163,10 +180,14 @@ try_device() {
     eval "_match=\${DEVICE_${_n}_MATCH:-}"
     eval "_pcm=\${DEVICE_${_n}_PCM:-0}"
     eval "_mixer=\${DEVICE_${_n}_MIXER:-}"
+    eval "_vol=\${DEVICE_${_n}_VOLUME:-}"
     [ -z "$_name" ] && return 2  # end of list
     [ -z "$_match" ] && return 1
     _card=$(resolve_match_to_card "$_match") || return 1
     [ -e "/dev/snd/pcmC${_card}D${_pcm}p" ] || return 1
+    # Volume first (broad-brush), then MIXER (user-specified fine-grained
+    # override). Either or both may be unset.
+    apply_device_volume "$_card" "$_vol"
     apply_device_mixer "$_card" "$_mixer"
     play_alsa "$_card" "$_pcm" "$_wav" || return 1
     return 0
