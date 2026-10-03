@@ -18,6 +18,35 @@ from cryptsetup_beep.config import BeepConfig
 
 
 @dataclass(frozen=True)
+class DeviceInfo:
+    """Snapshot of one ALSA card for the multi-device wizard.
+
+    Produced by `discover_all_output_devices()`. Carries everything the
+    wizard needs to suggest a MATCH string (codec: or usb:) and a PCM
+    index, plus a friendly description to show the user.
+    """
+
+    card_index: int
+    card_id: str                     # /proc/asound/card<N>/id
+    card_name: str                   # friendly name from /proc/asound/cards
+    codec_name: str | None           # first "Codec: ..." line, if any
+    usb_vendor_product: str | None   # /proc/asound/card<N>/usbid, if any
+    pcm_devices: list[int]           # playback PCM indices present
+
+    def suggested_match(self) -> str:
+        """Default MATCH string for this device: usb: if USB, else codec:."""
+        if self.usb_vendor_product:
+            return f"usb:{self.usb_vendor_product}"
+        if self.codec_name:
+            tokens = self.codec_name.split()
+            for token in reversed(tokens):
+                if re.match(r"^[A-Z0-9]{3,}$", token):
+                    return f"codec:{token}"
+            return f"codec:{self.codec_name}"
+        return ""
+
+
+@dataclass(frozen=True)
 class AlsaDevice:
     """A single playback target the wizard offers the user."""
 
@@ -239,3 +268,90 @@ def _codec_string_for_card(card_index: int) -> str:
         except OSError:
             continue
     return ""
+
+
+_CARDS_HEADER_RE = re.compile(
+    r"^\s*(?P<idx>\d+)\s+\[(?P<id>[^\]]+)\]:\s*(?P<desc>.+)$"
+)
+
+
+def discover_all_output_devices() -> list[DeviceInfo]:
+    """Return every ALSA card that has at least one playback PCM.
+
+    Reads directly from /proc/asound (not `aplay -l`) so the wizard can
+    recommend MATCH strings based on exactly the signals the runtime
+    player sees in the initramfs: codec name from /proc/asound/cardN/codec*,
+    USB vendor:product from /proc/asound/cardN/usbid.
+
+    Cards with no playback PCM (microphone-only USB mics, etc.) are
+    filtered out — they're never useful as a beep target.
+    """
+    cards_text = ""
+    try:
+        cards_text = Path("/proc/asound/cards").read_text(errors="replace")
+    except OSError:
+        return []
+
+    names_by_index: dict[int, tuple[str, str]] = {}
+    current_index: int | None = None
+    for line in cards_text.splitlines():
+        header = _CARDS_HEADER_RE.match(line)
+        if header is not None:
+            current_index = int(header.group("idx"))
+            card_id = header.group("id").strip()
+            # The description runs onto the next line in the standard format;
+            # we take the header's trailing text as a first-pass label.
+            names_by_index[current_index] = (card_id, header.group("desc").strip())
+            continue
+        # The second line usually carries the longer human description.
+        if current_index is not None and line.strip():
+            card_id, _ = names_by_index[current_index]
+            names_by_index[current_index] = (card_id, line.strip())
+            current_index = None
+
+    devices: list[DeviceInfo] = []
+    for card_dir in sorted(Path("/proc/asound").glob("card[0-9]*")):
+        try:
+            card_index = int(card_dir.name.removeprefix("card"))
+        except ValueError:
+            continue
+
+        # Playback PCMs expose /dev/snd/pcmC<idx>D<n>p; /proc/asound/cardN
+        # also exposes pcm<n>p directories. Prefer the /proc view (available
+        # in the initramfs too) and extract the device index from each.
+        pcm_devices: list[int] = []
+        for pcm_dir in sorted(card_dir.glob("pcm*p")):
+            name = pcm_dir.name  # e.g. "pcm0p"
+            digits = name[3:-1]
+            if digits.isdigit():
+                pcm_devices.append(int(digits))
+        if not pcm_devices:
+            continue
+
+        codec = _codec_string_for_card(card_index) or None
+
+        usbid: str | None = None
+        usbid_path = card_dir / "usbid"
+        if usbid_path.is_file():
+            try:
+                raw = usbid_path.read_text(errors="replace").strip()
+                if re.match(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$", raw):
+                    usbid = raw.lower()
+            except OSError:
+                pass
+
+        card_id, card_name = names_by_index.get(
+            card_index, (card_dir.name, card_dir.name)
+        )
+        devices.append(
+            DeviceInfo(
+                card_index=card_index,
+                card_id=card_id,
+                card_name=card_name,
+                codec_name=codec,
+                usb_vendor_product=usbid,
+                pcm_devices=pcm_devices,
+            )
+        )
+
+    return devices
