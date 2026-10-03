@@ -37,6 +37,15 @@ build() {
             for m in ${CODEC_MODULES:-}; do
                 add_module "$m"
             done
+            # Multi-device mode: if any DEVICE_*_MATCH uses the usb: kind,
+            # make sure snd_usb_audio is loaded in the initramfs. The user
+            # doesn't have to remember to add it to CODEC_MODULES by hand.
+            if grep -qE '^DEVICE_[0-9]+_MATCH=.*usb:' "$cfg" 2>/dev/null; then
+                case " ${CODEC_MODULES:-} " in
+                    *" snd_usb_audio "*) ;;
+                    *) add_module snd_usb_audio ;;
+                esac
+            fi
             add_binary /usr/bin/aplay
             add_binary /usr/bin/amixer
             add_full_dir /usr/share/alsa
