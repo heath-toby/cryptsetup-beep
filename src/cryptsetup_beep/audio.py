@@ -14,7 +14,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from cryptsetup_beep.config import BeepConfig
+from cryptsetup_beep.config import BeepConfig, DeviceEntry
 
 
 @dataclass(frozen=True)
@@ -235,6 +235,37 @@ def apply_volume_to_card(card_index: int, volume: int) -> None:
             ["amixer", "-c", card, "-q", "sset", control, f"{volume}%", "unmute"],
             stderr=subprocess.DEVNULL, check=False,
         )
+
+
+def preview_beep_entry(device: AlsaDevice, entry: DeviceEntry, wav_path: Path) -> None:
+    """Preview a MULTI-DEVICE entry — mirrors exactly what play-beep.sh does
+    per device in multi-device mode:
+      1. apply the entry's volume (if set) to the card's common controls
+      2. apply the entry's mixer string (if set) — fine-grained override
+      3. aplay through plughw:card,pcm
+    Deliberately does NOT touch the single-device config.mixer_* values —
+    those are irrelevant when the runtime is in multi-device mode. Keeps the
+    test faithful to boot-time behaviour.
+
+    Raises subprocess.CalledProcessError on aplay failure; mixer failures are
+    swallowed as usual (controls missing from a card are normal).
+    """
+    card = str(device.card_index)
+    if entry.volume >= 0:
+        apply_volume_to_card(device.card_index, entry.volume)
+    if entry.mixer:
+        parts = entry.mixer.split(" ", 1)
+        if len(parts) == 2:
+            control, value = parts
+            subprocess.run(
+                ["amixer", "-c", card, "-q", "sset", control]
+                + value.replace(",", " ").split(),
+                stderr=subprocess.DEVNULL, check=False,
+            )
+    subprocess.run(
+        ["aplay", "-q", "-D", device.pcm_spec, str(wav_path)],
+        check=True,
+    )
 
 
 def preview_beep(device: AlsaDevice, wav_path: Path, config: BeepConfig) -> None:

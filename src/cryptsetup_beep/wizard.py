@@ -680,14 +680,12 @@ class Wizard:
             )
             return
         try:
-            # Apply the device's own volume BEFORE calling preview_beep so
-            # the test reproduces exactly what the boot runtime will do
-            # (preview_beep itself applies the single-device mixer values,
-            # which is fine as a baseline — our per-device volume lands on
-            # top via the common controls).
-            if entry.volume >= 0:
-                audio.apply_volume_to_card(dev.card_index, entry.volume)
-            audio.preview_beep(dev, WAV_PATH, self.config)
+            # Use preview_beep_entry (not preview_beep) so the test faithfully
+            # reproduces what the runtime does for a multi-device entry: apply
+            # the entry's own volume + mixer, nothing else. preview_beep would
+            # clobber our per-device volume by applying the single-device
+            # mixer_* baseline on top.
+            audio.preview_beep_entry(dev, entry, WAV_PATH)
             self._set_status(self.multi_status, f"Played beep through {entry.name}.")
         except subprocess.CalledProcessError as exc:
             # aplay fails most commonly with -EBUSY when PipeWire is holding
