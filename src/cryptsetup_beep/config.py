@@ -42,8 +42,8 @@ ALLOWED_KEYS = frozenset({
 })
 
 # Pattern for the per-device multi-device keys. The suffixes allowed are the
-# only ones the runtime understands: NAME, MATCH, PCM, MIXER.
-_DEVICE_KEY_RE = re.compile(r"^DEVICE_([0-9]+)_(NAME|MATCH|PCM|MIXER)$")
+# only ones the runtime understands: NAME, MATCH, PCM, MIXER, VOLUME.
+_DEVICE_KEY_RE = re.compile(r"^DEVICE_([0-9]+)_(NAME|MATCH|PCM|MIXER|VOLUME)$")
 
 # Format of DEVICE_N_MATCH values.
 _MATCH_RE = re.compile(
@@ -71,12 +71,18 @@ class DeviceEntry:
       - "codec:SUBSTRING" — grep against /proc/asound/cardN/codec*
       - "usb:VVVV:PPPP"   — exact match against /proc/asound/cardN/usbid
     `mixer` is optional: "CONTROL VALUE[,STATE]" (e.g. "Headphone 80,unmute").
+    `volume` is optional (0-100). When set (>=0), the runtime applies it to
+    the card's common controls (Master, PCM, Headphone, Speaker) before
+    playing. Lets each device have its own level — handy when a dock
+    headphone output is far louder than the internal speakers at the same
+    nominal percentage. -1 means "don't touch the volume".
     """
 
     name: str
     match: str
     pcm: int = 0
     mixer: str = ""
+    volume: int = -1
 
 
 @dataclass
@@ -146,7 +152,13 @@ class BeepConfig:
             except ValueError:
                 pcm = 0
             mixer = fieldset.get("MIXER", "")
-            device_entries.append(DeviceEntry(name=name, match=match, pcm=pcm, mixer=mixer))
+            try:
+                volume = int(fieldset.get("VOLUME", "-1"))
+            except ValueError:
+                volume = -1
+            device_entries.append(DeviceEntry(
+                name=name, match=match, pcm=pcm, mixer=mixer, volume=volume,
+            ))
         kwargs["devices"] = device_entries
 
         return cls(**kwargs)  # type: ignore[arg-type]
@@ -174,6 +186,8 @@ class BeepConfig:
                 lines.append(f"DEVICE_{i}_PCM={dev.pcm}")
                 if dev.mixer:
                     lines.append(f"DEVICE_{i}_MIXER={shlex.quote(dev.mixer)}")
+                if dev.volume >= 0:
+                    lines.append(f"DEVICE_{i}_VOLUME={dev.volume}")
 
         return "\n".join(lines) + "\n"
 
@@ -269,6 +283,20 @@ def validate(data: dict[str, str]) -> list[str]:
                     f"DEVICE_{idx}_MIXER {mixer!r} must look like "
                     f"'CONTROL VALUE[,STATE]'"
                 )
+            # VOLUME is optional; if present must be an integer 0-100.
+            vol = fieldset.get("VOLUME")
+            if vol is not None:
+                try:
+                    vol_int = int(vol)
+                except ValueError:
+                    errors.append(
+                        f"DEVICE_{idx}_VOLUME must be an integer, got {vol!r}"
+                    )
+                else:
+                    if vol_int < 0 or vol_int > 100:
+                        errors.append(
+                            f"DEVICE_{idx}_VOLUME must be 0..100, got {vol_int}"
+                        )
 
     return errors
 
