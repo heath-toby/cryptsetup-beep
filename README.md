@@ -45,6 +45,83 @@ The wizard:
 
 Reboot. You should hear the beep just before the passphrase prompt.
 
+## Multiple fallback devices (advanced)
+
+If your hardware situation varies at boot — headphones sometimes plugged in,
+a Thunderbolt dock sometimes connected, a USB headset sometimes attached —
+you can configure an **ordered list of fallback devices**. At boot, the
+runtime tries each in order and plays through the first one that is present
+and working. If none of them is available, the boot continues silently.
+
+Enter the multi-device setup from the wizard: Page 3 ("Select an audio
+device") has an "Advanced" button labelled "Set up multiple fallback
+devices". The wizard shows the output devices it finds in `/proc/asound`,
+lets you add them to a priority list, move them up/down, remove them, and
+preview playback through any one of them before saving.
+
+The saved configuration looks like this in `/etc/cryptsetup-beep/config`:
+
+```sh
+METHOD=alsa
+CODEC_MODULES='snd_hda_intel snd_usb_audio'
+PROBE_TIMEOUT=5
+
+# Multi-device fallback list. Tried in numeric order;
+# first available device wins. Overrides CODEC_MATCH etc.
+DEVICE_1_NAME='Dock headphones'
+DEVICE_1_MATCH='usb:2188:6647'
+DEVICE_1_PCM=0
+DEVICE_1_MIXER='Headphone 80,unmute'
+DEVICE_2_NAME='Internal headphone jack'
+DEVICE_2_MATCH='codec:SN6140'
+DEVICE_2_PCM=0
+DEVICE_2_MIXER='Headphone 80,unmute'
+DEVICE_3_NAME='Internal speakers'
+DEVICE_3_MATCH='codec:SN6140'
+DEVICE_3_PCM=0
+DEVICE_3_MIXER='Speaker 70,unmute'
+```
+
+Two kinds of `DEVICE_N_MATCH` are understood:
+- `codec:SUBSTRING` — matches any card whose `/proc/asound/cardN/codec*`
+  files contain `SUBSTRING` (case-insensitive). The historical
+  `CODEC_MATCH` form.
+- `usb:VVVV:PPPP` — exact match against `/proc/asound/cardN/usbid`, which
+  is the USB vendor:product in lowercase hex (e.g. `2188:6647` for a
+  CalDigit TS5 Plus audio chip).
+
+`PROBE_TIMEOUT` is the number of seconds the runtime will spend waiting
+for a device to appear. The whole fallback list is retried once per
+second, so a value of 5 means five full passes. Bumping this helps if
+your USB or Thunderbolt-attached audio takes a few seconds to enumerate
+in the initramfs — the default is 5 seconds, enough for most docks.
+
+**USB and Thunderbolt-attached audio.** If any `DEVICE_N_MATCH` uses the
+`usb:` kind, the dracut and mkinitcpio hooks automatically add
+`snd_usb_audio` to the initramfs; you don't need to list it in
+`CODEC_MODULES` by hand. For audio exposed through a Thunderbolt dock,
+you also need the dock to be authorised during the initramfs — otherwise
+the USB controller behind the Thunderbolt tunnel never comes up and the
+dock's audio device isn't visible to the beep script. One concise way
+is a udev rule installed into the initramfs that sets `authorized=1`
+on your dock's known UUID:
+
+```
+# /etc/udev/rules.d/60-thunderbolt-luks-auth.rules
+ACTION=="add", SUBSYSTEM=="thunderbolt", \
+    ATTR{unique_id}=="YOUR-DOCK-UUID-HERE", ATTR{authorized}="1"
+```
+
+Add that file to the initramfs via your `dracut.conf.d/` or
+`mkinitcpio.conf` `FILES=` list. Your kernel also needs
+`CONFIG_USB4=y` (built-in, not module) so the Thunderbolt driver is
+alive before initramfs runs.
+
+Multi-device mode is **opt-in**: it only activates when `DEVICE_1_NAME`
+is present in the config. If you never visit the advanced page, the
+single-device fields (`CODEC_MATCH`, `PCM_DEVICE`, `MIXER_*`) continue
+to drive playback exactly as they did before.
+
 ## Requirements
 
 - mkinitcpio with the `sd-encrypt` hook (this is the standard systemd-based
