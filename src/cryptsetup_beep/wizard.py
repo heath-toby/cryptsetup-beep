@@ -343,11 +343,16 @@ class Wizard:
         page = _page()
         page.pack_start(_heading("Multiple fallback devices"), False, False, 0)
         page.pack_start(_body(
-            "Pick one or more audio devices for the boot beep. At boot the "
-            "player tries each in order and plays through the first one that "
-            "is present and working — so, for example, dock headphones first, "
-            "then the internal headphone jack, then internal speakers. "
-            "If none of them is available, the boot continues silently."
+            "Pick one or more audio devices for the boot beep. Add your "
+            "always-available fallback first — the device you want when "
+            "nothing else is connected. Then add any devices you'd prefer "
+            "when they're available; each new addition takes top priority "
+            "over the ones already in the list. For example: add internal "
+            "speakers first, then dock headphones — the beep plays through "
+            "the dock when the dock is connected, otherwise through the "
+            "speakers. Use Move up / Move down to re-order if needed. If no "
+            "configured device is available at boot, the beep is silent "
+            "and boot continues normally."
         ), False, False, 0)
 
         # --- Candidates (devices available on this machine) ---------------
@@ -366,8 +371,8 @@ class Wizard:
         page.pack_start(cand_scrolled, True, True, 0)
 
         add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.multi_add_btn = _button("_Add selected to fallback list",
-                                     atk_name="Add selected device to fallback list")
+        self.multi_add_btn = _button("_Add selected (takes top priority)",
+                                     atk_name="Add selected device as top priority")
         self.multi_add_btn.connect("clicked", self._on_multi_add)
         add_row.pack_start(self.multi_add_btn, False, False, 0)
         page.pack_start(add_row, False, False, 0)
@@ -536,9 +541,16 @@ class Wizard:
         elif dev.usb_vendor_product:
             name = dev.card_id or dev.card_name
         entry = DeviceEntry(name=name, match=match, pcm=pcm, mixer="")
-        self.multi_chosen_entries.append(entry)
+        # Insert at position 0 so each new add becomes the new top priority
+        # (DEVICE_1). Previously-added devices shift down the list to make
+        # room, which matches the "add fallback first, add preferred device
+        # next and it takes over" mental model.
+        self.multi_chosen_entries.insert(0, entry)
         self._populate_multi_chosen()
-        self._set_status(self.multi_status, f"Added {entry.name} ({entry.match}).")
+        self._set_status(
+            self.multi_status,
+            f"Added {entry.name} ({entry.match}) at top of priority list.",
+        )
 
     def _on_multi_up(self, _btn: Gtk.Button) -> None:
         idx = self._selected_chosen_index()
