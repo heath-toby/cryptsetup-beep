@@ -110,6 +110,93 @@ amixer_sset() {
     esac
 }
 
+# Apply a DEVICE_N_MIXER value of the form "CONTROL VALUE[,STATE]" against
+# the given card index. Silently no-ops if the string is empty.
+apply_device_mixer() {
+    # $1 card index, $2 mixer spec
+    _card=$1
+    _spec=$2
+    [ -z "$_spec" ] && return 0
+    _control=${_spec%% *}
+    _value=${_spec#* }
+    [ "$_control" = "$_spec" ] && return 0
+    amixer_sset "$_card" "$_control" "$_value"
+}
+
+# Resolve a MATCH string ("codec:X" or "usb:VVVV:PPPP") to a card index.
+# Prints the index on stdout and returns 0, or returns 1 if no card matches.
+resolve_match_to_card() {
+    _match=$1
+    _kind=${_match%%:*}
+    _spec=${_match#*:}
+    case "$_kind" in
+        codec)
+            for _dir in /proc/asound/card[0-9]*; do
+                [ -d "$_dir" ] || continue
+                grep -qi "$_spec" "$_dir"/codec* 2>/dev/null || continue
+                _c=${_dir#/proc/asound/card}
+                printf '%s\n' "$_c"
+                return 0
+            done
+            ;;
+        usb)
+            # /proc/asound/cardN/usbid contains "vendor:product" (lowercase hex).
+            _want=$(printf '%s' "$_spec" | tr 'A-Z' 'a-z')
+            for _dir in /proc/asound/card[0-9]*; do
+                [ -f "$_dir/usbid" ] || continue
+                _have=$(tr 'A-Z' 'a-z' < "$_dir/usbid" | tr -d '[:space:]')
+                [ "$_have" = "$_want" ] || continue
+                _c=${_dir#/proc/asound/card}
+                printf '%s\n' "$_c"
+                return 0
+            done
+            ;;
+    esac
+    return 1
+}
+
+# Attempt to play $2 (wav) through DEVICE_$1_* once. Returns 0 on success.
+try_device() {
+    _n=$1
+    _wav=$2
+    eval "_name=\${DEVICE_${_n}_NAME:-}"
+    eval "_match=\${DEVICE_${_n}_MATCH:-}"
+    eval "_pcm=\${DEVICE_${_n}_PCM:-0}"
+    eval "_mixer=\${DEVICE_${_n}_MIXER:-}"
+    [ -z "$_name" ] && return 2  # end of list
+    [ -z "$_match" ] && return 1
+    _card=$(resolve_match_to_card "$_match") || return 1
+    [ -e "/dev/snd/pcmC${_card}D${_pcm}p" ] || return 1
+    apply_device_mixer "$_card" "$_mixer"
+    play_alsa "$_card" "$_pcm" "$_wav" || return 1
+    return 0
+}
+
+# Walk the DEVICE_1..N list and play through the first one that works.
+# Retries the whole walk PROBE_TIMEOUT times with 1-second gaps to let USB
+# or Thunderbolt-attached audio enumerate before we give up silently.
+play_multi_device() {
+    _wav=$1
+    _retries=${PROBE_TIMEOUT:-5}
+    _attempt=0
+    while [ "$_attempt" -lt "$_retries" ]; do
+        _n=1
+        while [ "$_n" -lt 100 ]; do
+            eval "_probe=\${DEVICE_${_n}_NAME:-}"
+            [ -z "$_probe" ] && break
+            try_device "$_n" "$_wav"
+            _rc=$?
+            if [ "$_rc" -eq 0 ]; then
+                return 0
+            fi
+            _n=$((_n + 1))
+        done
+        _attempt=$((_attempt + 1))
+        [ "$_attempt" -lt "$_retries" ] && sleep 1
+    done
+    return 1
+}
+
 case "${METHOD:-pcspkr}" in
     pcspkr)
         modprobe pcspkr 2>/dev/null
@@ -139,37 +226,6 @@ case "${METHOD:-pcspkr}" in
             modprobe "$m" 2>/dev/null
         done
 
-        card=
-        i=0
-        while [ "$i" -lt 20 ]; do
-            for dir in /proc/asound/card[0-9]*; do
-                [ -d "$dir" ] || continue
-                if [ -n "${CODEC_MATCH:-}" ]; then
-                    grep -qi "$CODEC_MATCH" "$dir"/codec* 2>/dev/null || continue
-                fi
-                c=${dir#/proc/asound/card}
-                if [ -e "/dev/snd/pcmC${c}D${PCM_DEVICE:-0}p" ]; then
-                    card=$c
-                    break 2
-                fi
-            done
-            sleep 0.1
-            i=$((i + 1))
-        done
-
-        if [ -z "$card" ]; then
-            exit 1
-        fi
-
-        # Cold-boot codec defaults are often muted; set them explicitly.
-        # Mixer values are formatted as "<percent>" or "<percent>,<state>"
-        # — we split on the comma using POSIX parameter expansion rather than
-        # tr(1), which isn't reliably present in the initramfs.
-        [ -n "${MIXER_MASTER:-}" ]    && amixer_sset "$card" Master    "$MIXER_MASTER"
-        [ -n "${MIXER_SPEAKER:-}" ]   && amixer_sset "$card" Speaker   "$MIXER_SPEAKER"
-        [ -n "${MIXER_HEADPHONE:-}" ] && amixer_sset "$card" Headphone "$MIXER_HEADPHONE"
-        [ -n "${MIXER_PCM:-}" ]       && amixer_sset "$card" PCM       "$MIXER_PCM"
-
         prompt_kind=$(classify_prompt)
         printf '  kind=%s\n' "$prompt_kind" >> /run/cryptsetup-beep/debug.log 2>/dev/null
         default_wav=${BEEP_WAV:-/usr/share/cryptsetup-beep/beep.wav}
@@ -182,7 +238,50 @@ case "${METHOD:-pcspkr}" in
         # Fall back to the default WAV if the chosen one is missing.
         [ -r "$wav" ] || wav=$default_wav
 
-        play_alsa "$card" "${PCM_DEVICE:-0}" "$wav"
+        # Multi-device mode is opt-in: DEVICE_1_NAME present → iterate the
+        # ordered list, first available device wins. Otherwise fall through
+        # to the legacy single-device path below.
+        if [ -n "${DEVICE_1_NAME:-}" ]; then
+            play_multi_device "$wav"
+        else
+            # Single-device path (unchanged behaviour pre-0.4.0, with the
+            # probe-loop timeout now honouring PROBE_TIMEOUT instead of the
+            # hardcoded 2 seconds).
+            card=
+            # Convert PROBE_TIMEOUT (seconds) to 0.1s-step iterations.
+            iters=$(( ${PROBE_TIMEOUT:-5} * 10 ))
+            i=0
+            while [ "$i" -lt "$iters" ]; do
+                for dir in /proc/asound/card[0-9]*; do
+                    [ -d "$dir" ] || continue
+                    if [ -n "${CODEC_MATCH:-}" ]; then
+                        grep -qi "$CODEC_MATCH" "$dir"/codec* 2>/dev/null || continue
+                    fi
+                    c=${dir#/proc/asound/card}
+                    if [ -e "/dev/snd/pcmC${c}D${PCM_DEVICE:-0}p" ]; then
+                        card=$c
+                        break 2
+                    fi
+                done
+                sleep 0.1
+                i=$((i + 1))
+            done
+
+            if [ -z "$card" ]; then
+                exit 1
+            fi
+
+            # Cold-boot codec defaults are often muted; set them explicitly.
+            # Mixer values are formatted as "<percent>" or "<percent>,<state>"
+            # — we split on the comma using POSIX parameter expansion rather than
+            # tr(1), which isn't reliably present in the initramfs.
+            [ -n "${MIXER_MASTER:-}" ]    && amixer_sset "$card" Master    "$MIXER_MASTER"
+            [ -n "${MIXER_SPEAKER:-}" ]   && amixer_sset "$card" Speaker   "$MIXER_SPEAKER"
+            [ -n "${MIXER_HEADPHONE:-}" ] && amixer_sset "$card" Headphone "$MIXER_HEADPHONE"
+            [ -n "${MIXER_PCM:-}" ]       && amixer_sset "$card" PCM       "$MIXER_PCM"
+
+            play_alsa "$card" "${PCM_DEVICE:-0}" "$wav"
+        fi
         ;;
 
     *)
