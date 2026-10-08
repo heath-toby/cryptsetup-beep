@@ -212,17 +212,19 @@ try_device() {
     return 0
 }
 
-# Returns 0 if any non-domain Thunderbolt device entry is present in
-# /sys/bus/thunderbolt/devices/. Used to short-circuit USB-via-TB probes
-# when the dock isn't physically connected at all — avoids PROBE_TIMEOUT
-# seconds of pointless silence before falling back to the local speaker.
+# Returns 0 if any peripheral Thunderbolt device is physically connected.
+# Used to short-circuit USB-via-TB probes when the dock isn't attached —
+# avoids PROBE_TIMEOUT seconds of pointless silence before falling back
+# to the local speaker.
+#
+# Discriminator: peripheral TB devices expose vendor_name / device_name
+# sysfs files. Host routers (named "<domain>-0", e.g. "0-0", "1-0") and
+# domain controllers do NOT. The naive "authorized file exists" check
+# fails because host routers are permanently authorized=1 even with
+# nothing plugged in.
 tb_dock_connected() {
     for _d in /sys/bus/thunderbolt/devices/*; do
-        [ -d "$_d" ] || continue
-        case "${_d##*/}" in
-            domain*) continue ;;  # TB controllers; always present
-        esac
-        [ -f "$_d/authorized" ] && return 0
+        [ -f "$_d/vendor_name" ] && return 0
     done
     return 1
 }
