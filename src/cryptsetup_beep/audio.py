@@ -222,19 +222,35 @@ def get_current_volume(card_index: int) -> int | None:
 
 
 def apply_volume_to_card(card_index: int, volume: int) -> None:
-    """Set the given 0-100 volume on every common output control that exists
-    on the card. amixer silently no-ops on missing controls, so this is a
-    broad-brush equivalent of DEVICE_N_VOLUME in play-beep.sh — same semantics
-    so wizard tests behave exactly as the boot runtime will.
+    """Set the given 0-100 volume on the card's output chain. Matches what
+    DEVICE_N_VOLUME does in play-beep.sh so wizard tests behave exactly as
+    the boot runtime will.
+
+    HDA (and most USB audio) controls Master → PCM → Headphone/Speaker as a
+    SERIAL attenuator chain, so writing 70% to every control stacks down to
+    ~34% effective. Instead:
+      1. Unmute every common control (so no muted link kills audio).
+      2. Set volume on the first-available top-level control, in priority
+         order: Master → PCM → Headphone → Speaker. Only one is set, so our
+         requested percent is the ACTUAL effective percent.
     """
     if volume < 0 or volume > 100:
         return
     card = str(card_index)
+    # Unmute every plausible control (silent on controls that don't exist).
     for control in ("Master", "PCM", "Headphone", "Speaker"):
         subprocess.run(
-            ["amixer", "-c", card, "-q", "sset", control, f"{volume}%", "unmute"],
+            ["amixer", "-c", card, "-q", "sset", control, "unmute"],
             stderr=subprocess.DEVNULL, check=False,
         )
+    # Set volume on the first available top-level control.
+    for control in ("Master", "PCM", "Headphone", "Speaker"):
+        result = subprocess.run(
+            ["amixer", "-c", card, "sset", control, f"{volume}%"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        if result.returncode == 0:
+            return
 
 
 def preview_beep_entry(device: AlsaDevice, entry: DeviceEntry, wav_path: Path) -> None:

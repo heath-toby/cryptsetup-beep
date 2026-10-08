@@ -123,11 +123,23 @@ apply_device_mixer() {
     amixer_sset "$_card" "$_control" "$_value"
 }
 
-# Apply a DEVICE_N_VOLUME value (0-100) to the card's common output controls.
-# Tries Master, PCM, Headphone, Speaker — amixer_sset silently no-ops on
-# controls that don't exist, so this picks up whichever the card has.
+# Apply a DEVICE_N_VOLUME value (0-100) to the card's output chain.
+#
+# Setting the volume on EVERY common control is wrong — HDA (and most USB
+# audio devices) wire Master → PCM → Headphone/Speaker as a SERIAL chain,
+# so 70% × 70% × 70% stacks down to ~34% effective, not 70%. v0.4.0 did
+# this and the result was "painfully quiet" beeps that didn't match the
+# wizard's reported volume.
+#
+# Instead:
+#   1. UNMUTE every common output control (so no muted link kills audio)
+#   2. SET VOLUME on only the first-available top-level control, in
+#      priority order: Master (card-wide), PCM (common on USB), then
+#      output-specific. Leaves the others at wherever alsa-restore / the
+#      user had them, so our 70% means 70% and not 70% × their state.
+#
 # Called BEFORE apply_device_mixer so a user-specified MIXER string can
-# still override the broad-brush volume.
+# still override the broad-brush volume with a specific control + value.
 apply_device_volume() {
     # $1 card index, $2 volume 0-100 (empty / <0 = skip)
     _card=$1
@@ -135,8 +147,15 @@ apply_device_volume() {
     [ -z "$_vol" ] && return 0
     # POSIX integer comparison; -1 (unset sentinel) and anything non-numeric fail.
     [ "$_vol" -ge 0 ] 2>/dev/null || return 0
+    # Unmute all plausible path controls (silent no-op where missing).
     for _ctrl in Master PCM Headphone Speaker; do
-        amixer_sset "$_card" "$_ctrl" "${_vol}%,unmute"
+        amixer -c "$_card" -q sset "$_ctrl" unmute >/dev/null 2>&1
+    done
+    # Volume on the first control that actually exists.
+    for _ctrl in Master PCM Headphone Speaker; do
+        if amixer -c "$_card" sset "$_ctrl" "${_vol}%" >/dev/null 2>&1; then
+            return 0
+        fi
     done
 }
 
