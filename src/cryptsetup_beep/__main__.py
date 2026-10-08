@@ -46,16 +46,25 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_init() -> int:
-    try:
-        from cryptsetup_beep import wizard
-    except ImportError as exc:
-        print(
-            f"GTK3/PyGObject is required for the setup wizard but failed to "
-            f"import: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-    return wizard.run()
+    # Graphical if there's a display server AND GTK3 is importable. Fall
+    # back to the TTY wizard otherwise — Toby runs this from a bare TTY
+    # too (recovery, no-DE setups), where importing gi crashes or no
+    # display server exists for Gtk to attach to.
+    graphical = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if graphical:
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from gi.repository import Gtk  # noqa: F401
+            from cryptsetup_beep import wizard
+            return wizard.run()
+        except (ImportError, ValueError) as exc:
+            print(
+                f"Graphical wizard unavailable ({exc}); falling back to text mode.",
+                file=sys.stderr,
+            )
+    from cryptsetup_beep import tui
+    return tui.run()
 
 
 def cmd_test() -> int:
