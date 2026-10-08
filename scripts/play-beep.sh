@@ -212,27 +212,66 @@ try_device() {
     return 0
 }
 
-# Walk the DEVICE_1..N list and play through the first one that works.
-# Retries the whole walk PROBE_TIMEOUT times with 1-second gaps to let USB
-# or Thunderbolt-attached audio enumerate before we give up silently.
+# Returns 0 if any non-domain Thunderbolt device entry is present in
+# /sys/bus/thunderbolt/devices/. Used to short-circuit USB-via-TB probes
+# when the dock isn't physically connected at all — avoids PROBE_TIMEOUT
+# seconds of pointless silence before falling back to the local speaker.
+tb_dock_connected() {
+    for _d in /sys/bus/thunderbolt/devices/*; do
+        [ -d "$_d" ] || continue
+        case "${_d##*/}" in
+            domain*) continue ;;  # TB controllers; always present
+        esac
+        [ -f "$_d/authorized" ] && return 0
+    done
+    return 1
+}
+
+# Walk the DEVICE_1..N list SEQUENTIALLY — each device gets up to
+# PROBE_TIMEOUT retries (1s each) to become available before we fall
+# through to the next one. This honours the user's priority ordering:
+# the top-priority device actually gets waited for.
+#
+# Short-circuit: if a device uses a usb: match AND no TB device is
+# physically present, skip it immediately. Otherwise an undocked laptop
+# would waste PROBE_TIMEOUT seconds of silence before the speaker fallback.
 play_multi_device() {
     _wav=$1
     _retries=${PROBE_TIMEOUT:-5}
-    _attempt=0
-    while [ "$_attempt" -lt "$_retries" ]; do
-        _n=1
-        while [ "$_n" -lt 100 ]; do
-            eval "_probe=\${DEVICE_${_n}_NAME:-}"
-            [ -z "$_probe" ] && break
+    _n=1
+    while [ "$_n" -lt 100 ]; do
+        eval "_probe=\${DEVICE_${_n}_NAME:-}"
+        [ -z "$_probe" ] && return 1  # end of list, nothing played
+        eval "_match=\${DEVICE_${_n}_MATCH:-}"
+
+        # usb: match with no TB device attached → skip immediately
+        # rather than waste PROBE_TIMEOUT seconds of silence probing
+        # for a device whose transport isn't physically present.
+        case "$_match" in
+            usb:*)
+                if ! tb_dock_connected; then
+                    _n=$((_n + 1))
+                    continue
+                fi
+                ;;
+        esac
+
+        # Give THIS device up to PROBE_TIMEOUT iterations (1s each)
+        # before falling through to the next one. On docked boot the
+        # TB tunnel + USB enumeration completes within this window,
+        # so the preferred device wins.
+        _attempt=0
+        while [ "$_attempt" -lt "$_retries" ]; do
             try_device "$_n" "$_wav"
-            _rc=$?
-            if [ "$_rc" -eq 0 ]; then
+            if [ "$?" -eq 0 ]; then
                 return 0
             fi
-            _n=$((_n + 1))
+            _attempt=$((_attempt + 1))
+            [ "$_attempt" -lt "$_retries" ] && sleep 1
         done
-        _attempt=$((_attempt + 1))
-        [ "$_attempt" -lt "$_retries" ] && sleep 1
+
+        # Exhausted retries for this device; move on to next.
+        _n=$((_n + 1))
     done
     return 1
 }
