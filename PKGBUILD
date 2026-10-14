@@ -16,7 +16,7 @@ optdepends=(
 install=cryptsetup-beep.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 # sha256 pinned post-release — see the follow-up "Pin sha256 for v0.4.0" commit.
-sha256sums=('SKIP')
+sha256sums=('65a4963da4a2cc26bad40543ce13b199ab9647516f7f7854b4b99a9792d4b57a')
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
