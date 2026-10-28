@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import replace
-from typing import Callable
 
 from cryptsetup_beep import audio, hooks, pcspkr
 from cryptsetup_beep.config import BeepConfig, DeviceEntry, STAGING_PATH
