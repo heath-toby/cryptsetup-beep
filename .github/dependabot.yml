@@ -1,0 +1,26 @@
+# Dependabot config — https://docs.github.com/en/code-security/dependabot
+#
+# Keeps the pieces we actually version-pin fresh, with a weekly cadence
+# that is low-churn enough to review when the time comes. Minor and patch
+# updates for GitHub Actions get grouped into one PR so we are not drowning
+# in a dozen separate bump PRs for sibling actions.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "ci"
+      include: scope
+    labels:
+      - dependencies
+      - ci
